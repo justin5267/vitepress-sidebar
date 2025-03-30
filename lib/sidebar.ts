@@ -17,6 +17,58 @@ import {
   sortByObjectKey
 } from './helper.js';
 
+// 修改调试工具函数
+function debug(context: string, data: any, showDetail = false) {
+  if (!showDetail) {
+    console.log('\x1b[36m%s\x1b[0m', `[vitepress-sidebar] ${context}`);
+    return;
+  }
+  console.log('\x1b[36m%s\x1b[0m', `[vitepress-sidebar] ${context}:`);
+  console.dir(data, { depth: 2, colors: true });
+}
+
+// 添加一个路径匹配辅助函数
+function matchPath(pattern: string, path: string) {
+  // 标准化路径（确保以/开头）
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const normalizedPattern = pattern.startsWith('/') ? pattern : `/${pattern}`;
+
+  // 将模式转换为正则表达式
+  const regexPattern = normalizedPattern
+    .replace(/:[^/]+/g, '([^/]+)') // 匹配任意字符（除了/）
+    .replace(/\./g, '\\.') // 转义点号
+    .replace(/\//g, '\\/'); // 转义斜杠
+
+  const regex = new RegExp(`^${regexPattern}$`);
+
+  const match = normalizedPath.match(regex);
+
+  if (!match) {
+    return null;
+  }
+
+  // 提取变量和值
+  const varNames =
+    normalizedPattern.match(/:[^/]+/g)?.map((v) => v.slice(1).replace(/\.md$/, '')) || [];
+  const values = match.slice(1);
+
+  const params: Record<string, string> = {};
+  varNames.forEach((name, index) => {
+    params[name] = values[index];
+  });
+
+  debug(
+    '✅ 匹配成功',
+    {
+      变量映射: params,
+      匹配结果: match
+    },
+    true
+  );
+
+  return params;
+}
+
 function generateSidebarItem(
   depth: number,
   currentDir: string,
@@ -24,6 +76,8 @@ function generateSidebarItem(
   parentName: string | null,
   options: VitePressSidebarOptions
 ): SidebarListItem {
+  debug('生成侧边栏', { depth, currentDir, displayDir }, true);
+
   const filesByGlobPattern: string[] = globSync('**', {
     cwd: currentDir,
     maxDepth: 1,
@@ -155,9 +209,6 @@ function generateSidebarItem(
           );
         }
 
-        // If an index.md file exists in a folder subfile,
-        // replace the name or link of the folder with what is set in index.md.
-        // The index.md file can still be displayed if the value of `includeFolderIndexFile` is `true`.
         if (existsSync(indexFilePath)) {
           if (options.includeFolderIndexFile) {
             isNotEmptyDirectory = true;
@@ -218,6 +269,56 @@ function generateSidebarItem(
         let childItemText;
         const childItemTextWithoutExt = x.replace(/\.md$/, '');
 
+        let finalLink = childItemPathDisplay;
+
+        if (options.rewrites) {
+          for (const [pattern, target] of Object.entries(options.rewrites)) {
+            debug(
+              '尝试重写规则',
+              {
+                源路径: finalLink + '.md',
+                重写规则: pattern,
+                目标模板: target
+              },
+              true
+            );
+
+            const params = matchPath(pattern, finalLink + '.md');
+            if (params) {
+              const oldLink = finalLink;
+              // 替换变量
+              finalLink = target
+                .replace(/:[^\/]+/g, (match) => {
+                  const varName = match.slice(1);
+                  const value = params[varName] || match;
+                  debug(`替换变量: ${match} -> ${value}`, null, false);
+                  return value.replace(/\.md$/, '');
+                })
+                .replace(/\.md$/, ''); // 移除目标模板中的 .md 后缀
+
+              // 确保路径以 /docs 开头且以 / 结尾
+              finalLink =
+                (finalLink.startsWith('/') ? '' : '/') +
+                finalLink
+                  .replace(/\/index$/, '') // 移除末尾的 index
+                  .replace(/\/+$/, '') + // 移除末尾多余的斜杠
+                '/'; // 添加一个斜杠结尾
+
+              debug(
+                '✅ 重写完成',
+                {
+                  原始链接: oldLink,
+                  目标模板: target,
+                  最终链接: finalLink,
+                  参数: params
+                },
+                true
+              );
+              break;
+            }
+          }
+        }
+
         if (
           (options.useFolderLinkFromSameNameSubFile ||
             options.convertSameNameSubFileToGroupIndexPage) &&
@@ -230,7 +331,7 @@ function generateSidebarItem(
 
         return {
           text: childItemText,
-          link: childItemPathDisplay,
+          link: finalLink,
           ...(options.sortMenusByFrontmatterOrder
             ? {
                 order: getOrderFromFrontmatter(childItemPath, options.frontmatterOrderDefaultValue!)
@@ -333,7 +434,6 @@ export function generateSidebar(
   for (let i = 0; i < optionItems.length; i += 1) {
     const optionItem = optionItems[i]!;
 
-    // Exceptions for changed option names
     if (
       isTrueMinimumNumberOfTimes(
         [
@@ -456,10 +556,8 @@ export function generateSidebar(
   let sidebarResult;
 
   if (!isMultipleSidebars && Object.keys(sidebar).length === 1) {
-    // Single sidebar
     sidebarResult = Object.values(sidebar)[0].items;
   } else {
-    // Multiple sidebars
     sidebarResult = sidebar;
   }
 
@@ -474,11 +572,14 @@ export function withSidebar(
   vitePressOptions: UserConfig,
   sidebarOptions?: VitePressSidebarOptions | VitePressSidebarOptions[]
 ): Partial<UserConfig> {
-  let optionItems: (VitePressSidebarOptions | undefined)[];
+  debug('初始化配置', { rewrites: vitePressOptions.rewrites }, true);
+
+  let optionItems: VitePressSidebarOptions[];
 
   if (sidebarOptions === undefined) {
-    optionItems = [{}];
+    optionItems = [{}] as VitePressSidebarOptions[]; // 确保类型正确
   } else {
+    // 直接使用传入的 sidebarOptions
     optionItems = Array.isArray(sidebarOptions) ? sidebarOptions : [sidebarOptions];
   }
 
@@ -493,7 +594,7 @@ export function withSidebar(
 
   const sidebarResult: Partial<UserConfig> = {
     themeConfig: {
-      sidebar: generateSidebar(sidebarOptions)
+      sidebar: generateSidebar(sidebarOptions) // 直接传递原始的 sidebarOptions
     }
   };
 
@@ -504,7 +605,7 @@ export function withSidebar(
   const result: Partial<UserConfig> = objMergeNewKey(vitePressOptions, sidebarResult) as UserConfig;
 
   if (enableDebugPrint) {
-    debugPrint(sidebarOptions, result);
+    debug('侧边栏生成完成', null, false);
   }
 
   return result;

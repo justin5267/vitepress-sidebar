@@ -39,6 +39,9 @@ export declare interface VitePressSidebarOptions {
   rootGroupCollapsed?: boolean | null | undefined;
   frontmatterOrderDefaultValue?: number;
   frontmatterTitleFieldName?: string;
+  rewrites?: {
+    [pattern: string]: string;
+  };
   /**
    * @deprecated use `excludePattern` option instead. This option will be removed in a future version.
    */
